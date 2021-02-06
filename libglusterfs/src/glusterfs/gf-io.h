@@ -15,10 +15,9 @@
 
 #include <stddef.h>
 #include <stdbool.h>
-#include <stdatomic.h>
 #include <pthread.h>
 
-#include <urcu/arch.h>
+#include <urcu/uatomic.h>
 
 #ifdef HAVE_IO_URING
 
@@ -26,19 +25,6 @@
 #include <linux/io_uring.h>
 
 #endif /* HAVE_IO_URING */
-
-/* TODO: move these atomic definitions to a better common place. */
-
-#define gf_atomic_load_acquire(_ptr)                                           \
-    atomic_load_explicit((_ptr), memory_order_acquire)
-
-#define gf_atomic_store_release(_ptr, _val)                                    \
-    atomic_store_explicit((_ptr), (_val), memory_order_release)
-
-#define gf_atomic_xchg(_ptr, _val) atomic_exchange(_ptr, _val)
-
-#define gf_atomic_cmpxchg(_ptr, _old, _new)                                    \
-    atomic_compare_exchange_strong(_ptr, _old, _new)
 
 #define gf_io_object(_ptr, _type, _field) caa_container_of(_ptr, _type, _field)
 
@@ -238,7 +224,7 @@ gf_io_request_submit_list(gf_io_worker_t *worker, gf_io_list_item_t *first,
     switch (gf_io_mode()) {
 #ifdef HAVE_IO_URING
         case GF_IO_MODE_IO_URING:
-            prev = gf_atomic_xchg(&gf_io.sq.queue, last);
+            prev = uatomic_xchg(&gf_io.sq.queue, last);
             if (prev == NULL) {
                 if (fast) {
                     gf_io_delayed(worker, first);
@@ -253,7 +239,7 @@ gf_io_request_submit_list(gf_io_worker_t *worker, gf_io_list_item_t *first,
                 /* Another thread owns the pending queue. We complete the
                  * insertion into the queue and it will be processed by
                  * the other thread. */
-                gf_atomic_store_release(&prev->next, current);
+                CMM_STORE_SHARED(prev->next, current);
             }
             break;
 #endif /* HAVE_IO_URING */

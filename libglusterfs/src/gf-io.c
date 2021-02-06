@@ -561,15 +561,15 @@ gf_io_cq_wait(void)
 static int32_t
 gf_io_cqe_get(struct io_uring_cqe *cqe, bool block)
 {
-    uint32_t retries, current;
+    uint32_t retries, current, head;
     int32_t res;
 
     retries = 0;
     do {
-        current = gf_atomic_load_acquire(gf_io.cq.head);
+        current = CMM_LOAD_SHARED(*gf_io.cq.head);
 
         /* Check that the queue is not empty and try to get a CQE. */
-        while (caa_likely(gf_atomic_load_acquire(gf_io.cq.tail) != current)) {
+        while (caa_likely(CMM_LOAD_SHARED(*gf_io.cq.tail) != current)) {
             /* We need to atomically update the 'head' of CQ to avoid
              * that other threads could process the same entry. However,
              * as soon as the 'head' is updated, the kernel could overwrite
@@ -579,10 +579,12 @@ gf_io_cqe_get(struct io_uring_cqe *cqe, bool block)
              * it's discarded and a new CQE is read the next attempt. */
             *cqe = gf_io.cq.cqes[current & gf_io.cq.ring_mask];
 
-            if (caa_likely(
-                    gf_atomic_cmpxchg(gf_io.cq.head, &current, current + 1))) {
+            head = uatomic_cmpxchg(gf_io.cq.head, current, current + 1);
+            if (caa_likely(head == current)) {
                 return 1;
             }
+
+            current = head;
         }
 
         if (!block) {
@@ -671,7 +673,7 @@ gf_io_sq_wake(bool wait)
 {
     uint32_t flags;
 
-    flags = gf_atomic_load_acquire(gf_io.sq.flags);
+    flags = CMM_LOAD_SHARED(*gf_io.sq.flags);
     if ((flags & IORING_SQ_NEED_WAKEUP) != 0) {
         if (wait) {
             flags = IORING_ENTER_SQ_WAKEUP | IORING_ENTER_SQ_WAIT;
@@ -702,7 +704,7 @@ gf_io_sqe_add(gf_io_request_t *req)
     retries = 0;
     tail = *gf_io.sq.tail;
     do {
-        head = gf_atomic_load_acquire(gf_io.sq.head);
+        head = CMM_LOAD_SHARED(*gf_io.sq.head);
         /* Check that the SQ is not full before filling the SQE. */
         if (caa_likely((tail - head) < gf_io.sq.ring_entries)) {
             req->prepare(req, &gf_io.sq.sqes[tail & gf_io.sq.ring_mask]);
@@ -710,7 +712,7 @@ gf_io_sqe_add(gf_io_request_t *req)
             /* Make sure that SQE contents are visible to the kernel
              * before updating the tail. */
             cmm_smp_wmb();
-            gf_atomic_store_release(gf_io.sq.tail, tail + 1);
+            CMM_STORE_SHARED(*gf_io.sq.tail, tail + 1);
 
             /* We have already added the request to the SQ, so the kernel
              * may have started processing it. This could be true even if
@@ -748,7 +750,7 @@ gf_io_list_wait_next(gf_io_list_item_t *item)
     uint32_t attempt;
 
     attempt = 0;
-    while (caa_unlikely((next = gf_atomic_load_acquire(&item->next)) == NULL)) {
+    while (caa_unlikely((next = CMM_LOAD_SHARED(item->next)) == NULL)) {
         if (caa_unlikely(++attempt >= GF_IO_BUSY_WAIT_ATTEMPTS)) {
             return NULL;
         }
@@ -765,7 +767,7 @@ gf_io_list_is_ready(gf_io_list_item_t *item)
 {
     gf_io_list_item_t *next;
 
-    next = gf_atomic_load_acquire(&item->next);
+    next = CMM_LOAD_SHARED(item->next);
 
     return (next == GF_IO_REQUEST_READY);
 }
@@ -979,7 +981,7 @@ gf_io_push_wait_limited(gf_io_worker_t *worker, gf_io_list_item_t *item)
 static void
 gf_io_push_ready(gf_io_list_item_t *item)
 {
-    gf_atomic_store_release(&item->next, GF_IO_REQUEST_READY);
+    CMM_STORE_SHARED(item->next, GF_IO_REQUEST_READY);
 }
 
 /* Get a new pending request to process. If there are no pending requests
@@ -997,8 +999,8 @@ gf_io_push_next(gf_io_worker_t *worker, gf_io_list_item_t *item)
     if (caa_unlikely(next == NULL)) {
         /* After some time there are no more requests. The most likely
          * cause is that the queue is empty. We try to reset it. */
-        tmp = item;
-        if (caa_unlikely(!gf_atomic_cmpxchg(&gf_io.sq.queue, &tmp, NULL))) {
+        tmp = uatomic_cmpxchg(&gf_io.sq.queue, item, NULL);
+        if (caa_unlikely(tmp != item)) {
             /* More requests detected. We need to wait until the request
              * is fully inserted into the queue. */
             next = gf_io_push_wait(worker, item);
@@ -1107,7 +1109,7 @@ gf_io_worker_cleanup(gf_io_request_t *req)
             if (worker != NULL) {
                 gf_io_worker_disable(worker, res);
 
-                if (atomic_fetch_sub(&gf_io.num_workers, 1) == 1) {
+                if (uatomic_sub_return(&gf_io.num_workers, 1) == 0) {
                     gf_io_done(req);
                 }
 
