@@ -71,6 +71,7 @@
 #include "netgroups.h"
 #include "exports.h"
 #include <glusterfs/monitoring.h>
+#include <glusterfs/gf-io.h>
 
 #include <glusterfs/daemon.h>
 
@@ -2584,6 +2585,77 @@ out:
 /* This is the only legal global pointer  */
 glusterfs_ctx_t *glusterfsd_ctx;
 
+static int32_t
+main_terminate(gf_io_request_t *req)
+{
+    //    glusterfs_ctx_destroy (ctx);
+    gf_async_fini();
+
+    gf_io_done(req);
+
+    return 0;
+}
+
+static int32_t
+main_start(gf_io_request_t *req)
+{
+    int32_t res;
+
+    res = req->res;
+    if (res < 0) {
+        /* A failure during I/O framework initialization. */
+        goto out;
+    }
+
+    mem_pools_init();
+
+    /* TODO: gf_async support should be removed once the I/O framework
+     *       supports multithreaded I/O without io_uring. */
+    res = gf_async_init(global_ctx);
+    if (res < 0) {
+        goto out;
+    }
+
+#ifdef GF_LINUX_HOST_OS
+    res = set_oom_score_adj(global_ctx);
+    if (res)
+        goto out;
+#endif
+
+    global_ctx->env = syncenv_new(0, 0, 0);
+    if (!global_ctx->env) {
+        gf_smsg("", GF_LOG_ERROR, 0, glusterfsd_msg_31, NULL);
+        res = -1;
+        goto out;
+    }
+
+    if (!glusterfs_ctx_tw_get(global_ctx)) {
+        res = -1;
+        goto out;
+    }
+
+    res = glusterfs_volumes_init(global_ctx);
+    if (res)
+        goto out;
+
+    gf_io_done(req);
+
+    return 0;
+
+out:
+    //    glusterfs_ctx_destroy (global_ctx);
+    gf_async_fini();
+
+    /* TODO: 'res' should be a negative error code instead of -1. */
+    req->res = res;
+    gf_io_done(req);
+
+    return 0;
+}
+
+static gf_io_handlers_t main_handlers = {.start = main_start,
+                                         .terminate = main_terminate};
+
 int
 main(int argc, char *argv[])
 {
@@ -2699,44 +2771,14 @@ main(int argc, char *argv[])
     if (ret)
         goto out;
 
-    /*
-     * If we do this before daemonize, the pool-sweeper thread dies with
-     * the parent, but we want to do it as soon as possible after that in
-     * case something else depends on pool allocations.
-     */
-    mem_pools_init();
-
-    ret = gf_async_init(ctx);
-    if (ret < 0) {
-        goto out;
-    }
-
-#ifdef GF_LINUX_HOST_OS
-    ret = set_oom_score_adj(ctx);
-    if (ret)
-        goto out;
-#endif
-
-    ctx->env = syncenv_new(0, 0, 0);
-    if (!ctx->env) {
-        gf_smsg("", GF_LOG_ERROR, 0, glusterfsd_msg_31, NULL);
-        goto out;
-    }
-
-    /* do this _after_ daemonize() */
-    if (!glusterfs_ctx_tw_get(ctx)) {
-        ret = -1;
-        goto out;
-    }
-
-    ret = glusterfs_volumes_init(ctx);
-    if (ret)
-        goto out;
-
-    ret = gf_event_dispatch(ctx->event_pool);
+    /* Before 'daemonize()' there are no threads started because they would
+     * not be cloned into the child process and would die with the parent.
+     * After this point, there are several initialization functions that
+     * can start additional threads. Let's call them from inside the I/O
+     * framework context so that they can decide if a new thread is needed
+     * or use the I/O framework for the functionalities they need. */
+    ret = gf_io_run(0, &main_handlers, NULL);
 
 out:
-    //    glusterfs_ctx_destroy (ctx);
-    gf_async_fini();
     return ret;
 }

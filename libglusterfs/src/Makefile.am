@@ -37,7 +37,7 @@ libglusterfs_la_SOURCES = dict.c xlator.c logging.c \
 	$(CONTRIBDIR)/timer-wheel/timer-wheel.c \
 	$(CONTRIBDIR)/timer-wheel/find_last_bit.c default-args.c \
 	$(CONTRIBDIR)/xxhash/xxhash.c \
-	throttle-tbf.c monitoring.c async.c
+	throttle-tbf.c monitoring.c async.c gf-io.c
 
 nodist_libglusterfs_la_SOURCES = y.tab.c graph.lex.c defaults.c
 nodist_libglusterfs_la_HEADERS = y.tab.h
@@ -66,7 +66,7 @@ libglusterfs_la_HEADERS = glusterfs/common-utils.h glusterfs/defaults.h \
 	glusterfs/quota-common-utils.h glusterfs/rot-buffs.h \
 	glusterfs/compat-uuid.h glusterfs/upcall-utils.h glusterfs/throttle-tbf.h \
 	glusterfs/events.h glusterfs/atomic.h glusterfs/monitoring.h \
-	glusterfs/async.h glusterfs/glusterfs-fops.h
+	glusterfs/async.h glusterfs/glusterfs-fops.h glusterfs/gf-io.h
 
 libglusterfs_ladir = $(includedir)/glusterfs
 
