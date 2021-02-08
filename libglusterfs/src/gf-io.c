@@ -96,6 +96,12 @@
 #define LG_MSG_IO_FALLBACK_LVL(_res) GF_LOG_INFO
 #define LG_MSG_IO_FALLBACK_FMT "Falling back to traditional I/O mode."
 
+#define LG_MSG_IO_UNSTABLE_LVL(_res) GF_LOG_CRITICAL
+#define LG_MSG_IO_UNSTABLE_FMT                                                 \
+    "An unrecoverable error has happened in the middle of a sequence of "      \
+    "operations. This could cause other unexpected errors, hung requests "     \
+    "or other misbehaviors."
+
 #define gf_io_log(_res, _msg, _args...)                                        \
     gf_msg("io", _msg##_LVL(_res), -(_res), _msg, _msg##_FMT, ##_args)
 
@@ -1057,17 +1063,23 @@ gf_io_push_delayed(gf_io_request_t *req)
          * completions. */
         req->worker->delayed = req->data;
     }
+
+    return 0;
 }
 
 /* Send requests to the kernel in the background. */
 void
 gf_io_delayed(gf_io_worker_t *worker, gf_io_list_item_t *item)
 {
-    gf_io.sq.delay.res = 0;
-    gf_io.sq.delay.list.next = NULL;
-    gf_io_async(&gf_io.sq.delay, gf_io_push_delayed, item);
-    gf_io_push_one(worker, &gf_io.sq.delay);
-    gf_io_push_ready(&gf_io.sq.delay.list);
+    gf_io_request_t *req;
+
+    req = &gf_io.sq.delay;
+
+    req->res = 0;
+    req->list.next = NULL;
+    gf_io_async(req, gf_io_push_delayed, item);
+    gf_io_push_one(worker, req);
+    gf_io_push_ready(&req->list);
 }
 
 /* Terminate a worker and propagate the request if necessary. */
@@ -1122,6 +1134,8 @@ gf_io_worker_cleanup(gf_io_request_t *req)
     } else {
         gf_io_log(res, LG_MSG_IO_STOP_LOST);
     }
+
+    return 0;
 }
 
 /* Main worker thread. */
@@ -1130,7 +1144,6 @@ gf_io_worker_thread(void *arg)
 {
     gf_io_worker_t *self;
     gf_io_list_item_t *delayed;
-    int32_t res;
 
     self = &gf_io_worker;
 
@@ -1153,9 +1166,9 @@ gf_io_worker_thread(void *arg)
         }
     } while (caa_likely(self->enabled));
 
-    gf_io_log(res, LG_MSG_IO_WORKER_STOPPED, self);
+    gf_io_log(self->res, LG_MSG_IO_WORKER_STOPPED, self);
 
-    return (void *)(intptr_t)res;
+    return (void *)(intptr_t)self->res;
 }
 
 /* Build a string containing the names of bits present in a bitmap. The
@@ -1205,7 +1218,6 @@ gf_io_dump_params(struct io_uring_params *params)
         {}};
 
     char names[128];
-    gf_io_bitname_t *name;
 
     gf_io_debug(0, "I/O Ring: SQEs=%u, CQEs=%u, CPU=%u, Idle=%u",
                 params->sq_entries, params->cq_entries, params->sq_thread_cpu,
@@ -1426,6 +1438,9 @@ gf_io_done(gf_io_request_t *req)
 
     res = gf_io_sys_cond_update(&gf_io.cond, &gf_io.mutex, gf_io_call_update,
                                 req);
+    if (caa_unlikely(res < 0)) {
+        gf_io_log(res, LG_MSG_IO_UNSTABLE);
+    }
 }
 
 /* Process an asynchronous callback in the background and wait for a call
@@ -1471,8 +1486,8 @@ static int32_t
 gf_io_workers_start(uint32_t workers)
 {
     pthread_t thread;
-    uint32_t i, update;
-    int32_t res, tmp;
+    uint32_t i;
+    int32_t res;
 
     gf_io.num_workers = workers + 1;
 
@@ -1521,8 +1536,6 @@ gf_io_shutdown(void)
 static int32_t
 gf_io_main(uint32_t workers)
 {
-    gf_io_request_t req;
-    struct timespec to;
     int32_t res, tmp;
 
     switch (gf_io.mode) {

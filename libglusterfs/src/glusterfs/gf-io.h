@@ -218,7 +218,7 @@ gf_io_request_submit_list(gf_io_worker_t *worker, gf_io_list_item_t *first,
                           gf_io_list_item_t *last, bool fast)
 {
     gf_io_request_t *req;
-    gf_io_list_item_t *prev, *current;
+    gf_io_list_item_t *prev;
 
     last->next = NULL;
     switch (gf_io_mode()) {
@@ -233,13 +233,13 @@ gf_io_request_submit_list(gf_io_worker_t *worker, gf_io_list_item_t *first,
                      * pending queue. This means we have taken ownership
                      * of it and we are the only thread that can submit
                      * SQEs to the kernel. */
-                    gf_io_push(worker, current);
+                    gf_io_push(worker, first);
                 }
             } else {
                 /* Another thread owns the pending queue. We complete the
                  * insertion into the queue and it will be processed by
                  * the other thread. */
-                CMM_STORE_SHARED(prev->next, current);
+                CMM_STORE_SHARED(prev->next, first);
             }
             break;
 #endif /* HAVE_IO_URING */

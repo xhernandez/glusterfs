@@ -93,7 +93,7 @@ to always stop I/O before terminating the I/O framework.
 After everything is ready, the normal operation of the I/O framework is
 very simple:
 
-1. A worker peeks one completion event from the kernel.
+1. A worker picks one completion event from the kernel.
 2. The callback associated to the completion event is executed.
    2.1. The callback can prepare new I/O requests using one of the
         `gf_io_*` I/O functions available for I/O operations.
@@ -128,24 +128,23 @@ can efficiently manage them based on their priority.
 #### Asynchronous call
 
 ```c
-void gf_io_async(gf_io_request_t *req, gf_io_callback_t *callback,
-                 void *data);
+void gf_io_async(gf_io_request_t *req, gf_io_callback_t callback, void *data);
 ```
 
 #### Read operation
 
 ```c
-void gf_io_readv(gf_io_request_t *req, gf_io_callback_t *callback, void *data,
-                 int32_t fd, uint64_t offset, struct iovec *iovec,
-                 uint32_t count, uint64_t to, int32_t prio);
+void gf_io_preadv(gf_io_request_t *req, gf_io_callback_t callback, void *data,
+                  int32_t fd, const struct iovec *iov, uint32_t count,
+                  uint64_t offset, int32_t flags, uint64_t to, int32_t prio);
 ```
 
 #### Write operation
 
 ```c
-void gf_io_writev(gf_io_request_t *req, gf_io_callback_t *callback, void *data,
-                  int32_t fd, uint64_t offset, struct iovec *iovec,
-                  uint32_t count, uint64_t to, int32_t prio);
+void gf_io_writev(gf_io_request_t *req, gf_io_callback_t callback, void *data,
+                  int32_t fd, const struct iovec *iov, uint32_t count,
+                  uint64_t offset, int32_t flags, uint64_t to, int32_t prio);
 ```
 
 ## API Reference
