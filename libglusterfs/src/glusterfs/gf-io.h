@@ -97,7 +97,7 @@ struct _gf_io_request {
 #ifdef HAVE_IO_URING
         gf_io_prepare_t prepare; /* Used before submitting the SQE. */
 #endif                           /* HAVE_IO_URING */
-        gf_io_request_t *next; /* Used during processing of the CQE. */
+        gf_io_request_t *next;   /* Used during processing of the CQE. */
     };
 
     union {
@@ -186,10 +186,10 @@ extern gf_io_t gf_io;
 int32_t
 gf_io_run(uint32_t workers, gf_io_handlers_t *handlers, void *data);
 
+#ifdef HAVE_IO_URING
+
 void
 gf_io_done(gf_io_request_t *req);
-
-#ifdef HAVE_IO_URING
 
 /* Send requests to the kernel. This cannot be called directly, only
  * through gf_io_request_submit_list(). */
@@ -205,6 +205,13 @@ gf_io_delayed(gf_io_worker_t *worker, gf_io_list_item_t *item);
 void
 gf_io_prepare_async(gf_io_request_t *req, struct io_uring_sqe *sqe);
 
+#else /* ! HAVE_IO_URING */
+
+static inline void
+gf_io_done(gf_io_request_t *req)
+{
+}
+
 #endif /* HAVE_IO_URING */
 
 static inline gf_io_mode_t
@@ -218,41 +225,38 @@ gf_io_request_submit_list(gf_io_worker_t *worker, gf_io_list_item_t *first,
                           gf_io_list_item_t *last, bool fast)
 {
     gf_io_request_t *req;
-    gf_io_list_item_t *prev;
 
     last->next = NULL;
-    switch (gf_io_mode()) {
+
 #ifdef HAVE_IO_URING
-        case GF_IO_MODE_IO_URING:
-            prev = uatomic_xchg(&gf_io.sq.queue, last);
-            if (prev == NULL) {
-                if (fast) {
-                    gf_io_delayed(worker, first);
-                } else {
-                    /* We are the first one inserting requests to the
-                     * pending queue. This means we have taken ownership
-                     * of it and we are the only thread that can submit
-                     * SQEs to the kernel. */
-                    gf_io_push(worker, first);
-                }
+    if (gf_io_mode() == GF_IO_MODE_IO_URING) {
+        gf_io_list_item_t *prev = uatomic_xchg(&gf_io.sq.queue, last);
+        if (prev == NULL) {
+            if (fast) {
+                gf_io_delayed(worker, first);
             } else {
-                /* Another thread owns the pending queue. We complete the
-                 * insertion into the queue and it will be processed by
-                 * the other thread. */
-                CMM_STORE_SHARED(prev->next, first);
+                /* We are the first one inserting requests to the pending
+                 * queue. This means we have taken ownership of it and we
+                 * are the only thread that can submit SQEs to the kernel. */
+                gf_io_push(worker, first);
             }
-            break;
+        } else {
+            /* Another thread owns the pending queue. We complete the
+             * insertion into the queue and it will be processed by the
+             * other thread. */
+            CMM_STORE_SHARED(prev->next, first);
+        }
+
+        return;
+    }
 #endif /* HAVE_IO_URING */
 
-        case GF_IO_MODE_LEGACY:
-            do {
-                req = gf_io_object(first, gf_io_request_t, list);
-                req->worker = worker;
-                first = first->next;
-                req->cbk(req);
-            } while (first != NULL);
-            break;
-    }
+    do {
+        req = gf_io_object(first, gf_io_request_t, list);
+        req->worker = worker;
+        first = first->next;
+        req->cbk(req);
+    } while (first != NULL);
 }
 
 static inline void

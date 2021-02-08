@@ -129,6 +129,23 @@ static __thread gf_io_worker_t gf_io_worker = {};
 
 gf_io_t gf_io = {};
 
+#ifdef HAVE_IO_URING
+
+/* Close a file descriptor. */
+static int32_t
+gf_io_sys_close(int32_t fd)
+{
+    int32_t res;
+
+    res = close(fd);
+    if (caa_unlikely(res < 0)) {
+        res = -errno;
+        gf_io_log(res, LG_MSG_IO_SYSCALL, "close");
+    }
+
+    return res;
+}
+
 /* Get a monotonic time. */
 static int32_t
 gf_io_sys_clock_gettime(struct timespec *now)
@@ -363,23 +380,6 @@ gf_io_sys_cond_update(pthread_cond_t *cond, pthread_mutex_t *mutex,
         if (caa_unlikely(tmp < 0) && (res >= 0)) {
             res = tmp;
         }
-    }
-
-    return res;
-}
-
-#ifdef HAVE_IO_URING
-
-/* Close a file descriptor. */
-static int32_t
-gf_io_sys_close(int32_t fd)
-{
-    int32_t res;
-
-    res = close(fd);
-    if (caa_unlikely(res < 0)) {
-        res = -errno;
-        gf_io_log(res, LG_MSG_IO_SYSCALL, "close");
     }
 
     return res;
@@ -1408,8 +1408,6 @@ failed_close:
     return res;
 }
 
-#endif /* HAVE_IO_URING */
-
 /* Helper function to mark a call as completed. */
 static int32_t
 gf_io_call_update(void *arg)
@@ -1443,6 +1441,8 @@ gf_io_done(gf_io_request_t *req)
     }
 }
 
+#endif /* HAVE_IO_URING */
+
 /* Process an asynchronous callback in the background and wait for a call
  * to gf_io_done() or until a timeout expires. The return value is a negative
  * error code if the wait fails. Otherwise it's the value passed to
@@ -1450,15 +1450,14 @@ gf_io_done(gf_io_request_t *req)
 static int32_t
 gf_io_call(gf_io_callback_t cbk, void *data, uint32_t to_secs)
 {
-    struct timespec to;
     gf_io_request_t req;
     int32_t res;
 
     gf_io_async(&req, cbk, data);
     gf_io_request_submit(NULL, &req, true);
 
-    to.tv_sec = to_secs;
-    to.tv_nsec = 0;
+#ifdef HAVE_IO_URING
+    struct timespec to = {.tv_sec = to_secs, .tv_nsec = 0};
 
     res = gf_io_sys_cond_timedwait(&gf_io.cond, &gf_io.mutex, &to,
                                    gf_io_call_wait, &req);
@@ -1468,6 +1467,12 @@ gf_io_call(gf_io_callback_t cbk, void *data, uint32_t to_secs)
             res = -res;
         }
     }
+#else  /* ! HAVE_IO_URING */
+    res = req.res;
+    if (res < 0) {
+        res = -res;
+    }
+#endif /* HAVE_IO_URING */
 
     return res;
 }
@@ -1536,7 +1541,7 @@ gf_io_shutdown(void)
 static int32_t
 gf_io_main(uint32_t workers)
 {
-    int32_t res, tmp;
+    int32_t res;
 
     switch (gf_io.mode) {
         case GF_IO_MODE_LEGACY:
@@ -1549,8 +1554,8 @@ gf_io_main(uint32_t workers)
              *       io_uring there's nothing we can do. */
             res = gf_event_dispatch(global_ctx->event_pool);
 
-            tmp = gf_io_sys_cond_wait(&gf_io.cond, &gf_io.mutex,
-                                      gf_io_shutdown_wait, NULL);
+            int32_t tmp = gf_io_sys_cond_wait(&gf_io.cond, &gf_io.mutex,
+                                              gf_io_shutdown_wait, NULL);
             if (caa_likely(res >= 0)) {
                 res = tmp;
             }
